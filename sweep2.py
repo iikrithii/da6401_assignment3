@@ -9,43 +9,6 @@ sweep_config = {
         'goal': 'maximize'
     },
 
-#     'parameters': {
-#         'emb_dim': {
-#             'values': [16, 32, 64, 256]
-#         },
-#         'hid_dim': {
-#             'values': [16, 32, 64, 256]
-#         },
-#         'enc_layers': {
-#             'values': [1, 2, 3]
-#         },
-#         'dec_layers': {
-#             'values': [1, 2, 3]
-#         },
-#         'cell_type': {
-#              'values': ['RNN', 'GRU', 'LSTM']
-#         },
-#         'dropout': {
-#             'values': [0.2, 0.3]
-#         },
-#         'beam_width': {
-#             'values': [1,3,5]
-#         },
-#         'optimizer': {
-#             'values': ['Adam','SGD','RMSprop','NAdam']
-#         },
-#         'lr': {
-#             'values': [0.001, 0.0005, 0.0001]
-#         },
-#         'batch_size': {
-#             'values': [64, 128]
-#         },
-#         'epochs': {
-#             'values': [15]
-#         }
-#     }
-# }
-
     'parameters': {
         'emb_dim': {
             'values': [64, 256, 512]
@@ -60,7 +23,7 @@ sweep_config = {
             'values': [3, 4]
         },
         'cell_type': {
-             'values': ['GRU', 'LSTM']
+            'values': ['GRU', 'LSTM']
         },
         'dropout': {
             'values': [0.2, 0.3]
@@ -79,10 +42,12 @@ sweep_config = {
         },
         'epochs': {
             'values': [25]
+        },
+        'attention': {
+            'values': ['True']
         }
     }
 }
-
 
 pprint.pprint(sweep_config)
 

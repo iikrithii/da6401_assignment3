@@ -25,6 +25,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Train Seq2Seq model')
     parser.add_argument('--train_file', type=str, default="dakshina_dataset_v1.0/hi/lexicons/hi.translit.sampled.train.tsv")
     parser.add_argument('--val_file',   type=str, default="dakshina_dataset_v1.0/hi/lexicons/hi.translit.sampled.dev.tsv")
+    parser.add_argument('--wandb_entity', type=str, default="your-entity-here")
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--emb_dim',    type=int, default=128)
     parser.add_argument('--hid_dim',    type=int, default=256)
@@ -37,14 +38,15 @@ def parse_args():
     parser.add_argument('--save_path',  type=str, default='models/model.pt')
     parser.add_argument('--project',    type=str, default='DA6401_Assignment3')
     parser.add_argument('--optimizer',  type=str, choices=['Adam','SGD','RMSprop','NAdam','AdamW'], default='Adam')
-    parser.add_argument('--beam_width', type=int, default=1,
-                        help='Beam width >1 enables beam search decoding')
+    parser.add_argument('--beam_width', type=int, default=1)
+    parser.add_argument('--attention', type=bool, default=False)
     return parser.parse_args()
 
 def main():
     args = parse_args()
-    wandb.init(project=args.project, config=vars(args))
+    wandb.init(project=args.project, entity=args.wandb_entity, config=vars(args))
     config = wandb.config
+    print("attention", args.attention)
 
     run_name = (
         f"bs_{config.batch_size}_"
@@ -62,22 +64,23 @@ def main():
     wandb.run.name=run_name
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    #Building Vocabularies
+    # Building Vocabularies
     src_vocab = Vocab()
     tgt_vocab = Vocab()
     train_ds = Seq2SeqDataset(args.train_file, src_vocab, tgt_vocab)
     val_ds   = Seq2SeqDataset(args.val_file,   src_vocab, tgt_vocab)
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size,
+    train_loader = DataLoader(train_ds, batch_size=config.batch_size,
                               shuffle=True, collate_fn=collate_fn)
-    val_loader   = DataLoader(val_ds,   batch_size=args.batch_size,
+    val_loader   = DataLoader(val_ds,   batch_size=config.batch_size,
                               shuffle=False, collate_fn=collate_fn)
 
     # Setting up the model
-    enc = Encoder(src_vocab.size, args.emb_dim, args.hid_dim,
-                  args.enc_layers, args.cell_type, args.dropout)
-    dec = Decoder(tgt_vocab.size, args.emb_dim, args.hid_dim,
-                  args.dec_layers, args.cell_type, args.dropout)
+    enc = Encoder(src_vocab.size, config.emb_dim, config.hid_dim,
+                  config.enc_layers, config.cell_type, config.dropout)
+    dec = Decoder(tgt_vocab.size, config.emb_dim, config.hid_dim,
+                  config.enc_layers, config.cell_type, config.dropout,
+                  use_attention=config.attention)
     model = Seq2Seq(enc, dec, args.beam_width, device).to(device)
 
     optim_map = {
@@ -89,18 +92,26 @@ def main():
         'NAdam': torch.optim.NAdam,
     }
     optimizer = optim_map[config.optimizer](model.parameters(), lr=config.lr)
-    criterion = torch.nn.CrossEntropyLoss(ignore_index=src_vocab.char2idx[PAD_TOKEN])
+    criterion = torch.nn.CrossEntropyLoss(ignore_index=tgt_vocab.char2idx[PAD_TOKEN])
 
     best_val_acc = 0.0
     
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(1, config.epochs + 1):
         model.train()
         train_loss = 0.0
         train_preds, train_tgts = [], []
         for src_batch, tgt_batch, _, _ in train_loader:
             src_batch, tgt_batch = src_batch.to(device), tgt_batch.to(device)
             optimizer.zero_grad()
-            outputs = model(src_batch, tgt_batch, teacher_forcing_ratio=0.5)
+            res = model(src_batch,
+                        tgt_batch,
+                        teacher_forcing_ratio=0.5,
+                        return_attn=True)
+            # unpacking it in case of returning the attention weights
+            if isinstance(res, tuple):
+                outputs, _ = res
+            else:
+                outputs = res
             out_dim = outputs.size(-1)
             loss = criterion(
                 outputs[:,1:].reshape(-1, out_dim),
@@ -134,7 +145,14 @@ def main():
             for src_batch, tgt_batch, _, _ in val_loader:
                 src_batch, tgt_batch = src_batch.to(device), tgt_batch.to(device)
 
-                outputs = model(src_batch, tgt_batch, teacher_forcing_ratio=0.0)
+                res = model(src_batch,
+                            tgt_batch,
+                            teacher_forcing_ratio=0.0,
+                            return_attn=True)
+                if isinstance(res, tuple):
+                    outputs, _ = res
+                else:
+                    outputs = res
 
                 out_dim = outputs.size(-1)
                 loss = criterion(
@@ -164,9 +182,9 @@ def main():
         val_loss /= len(val_loader)
         val_acc = sequence_accuracy(
             all_preds, all_targets,
-            pad_idx=src_vocab.char2idx[PAD_TOKEN],
-            sos_idx=src_vocab.char2idx[SOS_TOKEN],
-            eos_idx=src_vocab.char2idx[EOS_TOKEN]
+            pad_idx=tgt_vocab.char2idx[PAD_TOKEN],
+            sos_idx=tgt_vocab.char2idx[SOS_TOKEN],
+            eos_idx=tgt_vocab.char2idx[EOS_TOKEN]
         )
 
         print(f"[Epoch {epoch}] Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}% Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
@@ -183,13 +201,13 @@ def main():
         # To save the best epoch model, comment for doing sweep
         if val_acc > best_val_acc:
             best_val_acc = val_acc
-            # os.makedirs(os.path.dirname(args.save_path) or '.', exist_ok=True)
-            # save_checkpoint({
-            #     'model_state': model.state_dict(),
-            #     'src_vocab': src_vocab,
-            #     'tgt_vocab': tgt_vocab
-            # }, args.save_path)
-            print(f"-> New best model saved (Epoch {epoch}, Val Acc {val_acc:.2f}%)")
+            os.makedirs(os.path.dirname(args.save_path) or '.', exist_ok=True)
+            save_checkpoint({
+                'model_state': model.state_dict(),
+                'src_vocab': src_vocab,
+                'tgt_vocab': tgt_vocab
+            }, args.save_path)
+            # print(f"-> New best model saved (Epoch {epoch}, Val Acc {val_acc:.2f}%)")
     wandb.log({'best_val_acc': best_val_acc})
 
 if __name__ == '__main__':
